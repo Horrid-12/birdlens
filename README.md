@@ -17,10 +17,10 @@ It combines the **OSEA / DIB-10K** bird recognition pipeline with data from **eB
   - a bird is detected but the model is not confident enough to identify the species.
 - Show additional species information from external sources.
 - Display recent sightings for the selected region.
-- Keep a small history of recent identifications.
+- Keep a client-side history of the last 12 identifications, including thumbnails. This history lives only in the page and is cleared on reload.
 - Show notable birds recently reported in the selected region.
-- Support several Indian regions as well as an All India option.
-- Handle common image formats including JPG, PNG, WEBP and HEIC/HEIF.
+- Support several Indian regions, an All India option, and a few international ones (United States, New York, United Kingdom, Australia).
+- Handle JPG, PNG and WEBP uploads. HEIC/HEIF passes validation but needs an extra decoder to actually be identified — see [Image handling](#image-handling).
 - Limit uploads to 20 MB.
 
 ## How the identification works
@@ -57,13 +57,17 @@ The current defaults are:
 
 These values are configurable and should be recalibrated against a larger labelled test set before treating them as final.
 
+There is one more threshold on the frontend: results scoring below **15%** are replaced with an "unable to identify" panel instead of the full results view. So a request can pass the server-side check and still be presented to the user as unidentified.
+
 ## Data sources
 
 After a successful identification, BirdLens can query:
 
 - **eBird** for taxonomy and recent sightings
 - **iNaturalist** for observation counts and conservation information
-- **Wikipedia** for a short species summary and image where available
+- **Wikipedia** for a short species summary
+
+The `/identify` response also includes a Wikipedia thumbnail URL, though the current interface only displays the summary text and the link back to the article.
 
 The nearby sightings section is also powered by eBird's regional observations.
 
@@ -72,6 +76,7 @@ The nearby sightings section is also powered by eBird's regional observations.
 ### Backend
 - Python
 - Flask
+- Gunicorn (WSGI server, optional for local runs)
 - ONNX Runtime
 - NumPy
 - Pillow
@@ -112,7 +117,7 @@ BirdLens/
 └── README.md
 ```
 
-The model assets are downloaded automatically into `models/` the first time OSEA is loaded if they are not already present.
+The model assets are downloaded automatically into `models/` the first time OSEA is loaded if they are not already present. They are also committed to the repository, so a fresh clone already has them and no download occurs.
 
 ## Running locally
 
@@ -149,7 +154,7 @@ pip install -r requirements.txt
 
 BirdLens uses the eBird API for taxonomy and sighting data.
 
-Set your API key as an environment variable rather than committing it to the repository.
+Set your API key as an environment variable rather than committing it to the repository. There is no built-in fallback, so the app still starts without one, but identification results arrive with no taxonomy, no recent sightings, and an empty nearby section.
 
 Windows PowerShell:
 
@@ -193,11 +198,19 @@ On its first startup, OSEA downloads the required model assets if they are not a
 
 The Flask application can also be loaded by a WSGI server such as Gunicorn.
 
-For example:
+The `Procfile` already wires this up:
+
+```text
+web: gunicorn app:app
+```
+
+Which is the same as running:
 
 ```bash
 gunicorn app:app
 ```
+
+Note that `app.py` loads the OSEA models at import time, so every Gunicorn worker loads its own copy. Keep the worker count low.
 
 For temporary remote testing, a tunnel such as Cloudflare Tunnel can be placed in front of the local Flask server. This is useful for sharing the app with friends without deploying the application permanently.
 
@@ -218,6 +231,8 @@ image   uploaded image file
 region  eBird region code, e.g. IN-MH
 ```
 
+A region that does not match a country or country-state pattern is not rejected. It silently falls back to `IN-MH`, so an invalid region returns results for Maharashtra rather than an error.
+
 The response includes the identification state, predictions, confidence information, taxonomy, recent sightings, and available external information.
 
 ### `GET /nearby`
@@ -232,15 +247,19 @@ Example:
 
 ## Image handling
 
-Uploads are restricted to:
+Uploads are accepted for these MIME types:
 
-- JPEG
-- PNG
-- WEBP
-- HEIC
-- HEIF
+- `image/jpeg`
+- `image/png`
+- `image/webp`
+- `image/heic`
+- `image/heif`
 
-The server currently enforces a **20 MB upload limit** and validates the incoming MIME type and extension before processing.
+Note that HEIC and HEIF are accepted by the server but not decodable — see the [caveat below](#heic--heif-caveat).
+
+The server enforces a **20 MB upload limit** and rejects requests whose MIME type is not on the list above with a `415`.
+
+The file extension is not used to reject anything. An unrecognised extension is quietly rewritten to `.jpg` before the upload is saved to a temporary file, so the MIME type is what actually decides whether a file is accepted.
 
 Temporary uploaded files are removed after classification.
 
@@ -259,7 +278,10 @@ BirdLens is still experimental, so there are a few things to keep in mind:
 - Species identification is not guaranteed to be correct.
 - Very similar species can be difficult to separate.
 - Image quality, framing, lighting and obstructions can affect detection.
+- HEIC/HEIF uploads are accepted but cannot be decoded, so they never identify. Use JPG, PNG or WEBP.
+- The identification history is in-memory only and is lost when the page is reloaded.
 - External API availability can affect taxonomy and sighting information.
+- Without an `EBIRD_API_KEY` set, all eBird calls fail, so there is no taxonomy, no sightings and no nearby section.
 - OSEA currently runs on the CPU.
 - The model is loaded once per server process/worker. Running multiple Gunicorn workers therefore means each worker has its own model instance.
 - The confidence thresholds are practical defaults, not a formal calibration.
